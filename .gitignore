@@ -1,2 +1,2 @@
-config/xray/config.json
-config_target.json
+config.json
+.venv/

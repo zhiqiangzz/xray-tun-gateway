@@ -103,6 +103,20 @@
     "rules": [
       {
         "type": "field",
+        "outboundTag": "proxy",
+        "domain": [
+          "domain:googleapis.cn",
+          "domain:gstatic.com"
+        ]
+      },
+      {
+        "type": "field",
+        "port": "443",
+        "network": "udp",
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
         "outboundTag": "direct",
         "ip": ["geoip:private"]
       },

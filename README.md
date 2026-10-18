@@ -29,31 +29,36 @@ Podman.
 
 ## Prerequisites
 
-- `config/xray/config.json`: copy `config/xray/config.json.example` and fill
-  in your own VLESS+Reality server details, or generate it from a share link
-  (see below). This file contains secrets and is gitignored.
+- `config.json`: your real VLESS+Reality server details. This file contains
+  secrets and is gitignored. Either copy `config.template.json` by hand and
+  fill in the placeholders, or generate it from a share link (see below).
 - A helper image with `ip` (iproute2) for the one-shot route-fixup commands
   below: `docker.io/nicolaka/netshoot:latest`. Any image with `ip` works.
 
 ### Generating config.json from a vless:// link
 
-`vless2config.py` (stdlib-only, no dependencies) parses a `vless://` share
-link and splices the resulting outbound into the same inbound/dns/routing
-template used by `config/xray/config.json.example`. A share link alone only
-describes how to reach the remote server -- it says nothing about local
-listening/routing -- so the script's job is exactly that splice; the raw
-outbound fragment by itself would not be a usable gateway config.
+`vless2config.py` parses a `vless://` share link into the "proxy" outbound
+and splices it into `config.template.json` (replacing its placeholder
+`proxy` outbound), writing the result to `config.json`. A share link alone
+only describes how to reach the remote server -- it says nothing about local
+listening/routing/DNS -- so the script's job is exactly that splice; the raw
+outbound fragment by itself would not be a usable gateway config, and the
+shared inbound/dns/routing structure lives once in `config.template.json`,
+not duplicated inside the script.
+
+The script only needs the standard library, but it's set up as a `uv`
+project so running it doesn't depend on whatever Python happens to be on
+your `PATH`:
 
 ```bash
-./vless2config.py 'vless://uuid@host:port?...#remark'   # writes config_target.json
-mv config_target.json config/xray/config.json
+uv sync                                                  # one-time: creates .venv
+uv run vless2config.py 'vless://uuid@host:port?...#remark'   # writes config.json
 ```
 
 Only `tcp` transport is supported, with `reality`, `tls` or no security
 (matching what this gateway has actually been tested against); other
 transports (`ws`/`grpc`/`kcp`/`quic`/`xhttp`) raise a clear error instead of
-emitting a config that looks valid but doesn't work. `config_target.json` is
-gitignored since it carries real secrets like `config.json` does.
+emitting a config that looks valid but doesn't work.
 
 ---
 
@@ -81,7 +86,7 @@ docker run -d --name tun-gw-xray \
   --sysctl net.ipv4.conf.all.forwarding=1 \
   -e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= -e NO_PROXY= \
   -e http_proxy= -e https_proxy= -e all_proxy= -e no_proxy= \
-  -v "$(pwd)/config/xray/config.json:/usr/local/etc/xray/config.json:ro" \
+  -v "$(pwd)/config.json:/usr/local/etc/xray/config.json:ro" \
   tun-gw-xray:local
 ```
 
@@ -183,7 +188,7 @@ podman run -d --name tun-gw-xray \
   --cap-add NET_ADMIN --device /dev/net/tun --user 0 \
   --sysctl net.ipv4.conf.all.forwarding=1 \
   --http-proxy=false \
-  -v "$(pwd)/config/xray/config.json:/usr/local/etc/xray/config.json:ro" \
+  -v "$(pwd)/config.json:/usr/local/etc/xray/config.json:ro" \
   tun-gw-xray:local
 ```
 
