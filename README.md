@@ -26,6 +26,12 @@ Podman.
 - The gateway container has no restart policy (it will not auto-start), but
   its entrypoint re-applies its internal route fix on every startup, so a
   manual `start`/`restart` is always enough to bring it back correctly.
+- Routing policy is full-tunnel: everything except private/LAN addresses
+  goes through `proxy` (see `config.template.json`'s `routing.rules` -- there
+  is no geoip/geosite China-direct bypass). The config also exposes a
+  `socks` inbound on `127.0.0.1:10808` inside the gateway's own netns, in
+  addition to the `tun` inbound, for manual debugging from inside the
+  gateway.
 
 ## Prerequisites
 
@@ -59,6 +65,21 @@ Only `tcp` transport is supported, with `reality`, `tls` or no security
 (matching what this gateway has actually been tested against); other
 transports (`ws`/`grpc`/`kcp`/`quic`/`xhttp`) raise a clear error instead of
 emitting a config that looks valid but doesn't work.
+
+`config.template.json` mirrors a desktop (v2rayN-style) export almost
+exactly -- same `dns` block, same `socks` + `tun` inbounds, same flattened
+vless outbound shape (`settings.address/port/id` instead of
+`vnext`/`users`), `network: "raw"`, `realitySettings.mldsa65Verify` --
+with two deliberate differences from a literal copy:
+- the `tun` inbound's device is named `"tun0"`, not a desktop-style
+  `"utun46"`, because `entrypoint.sh` waits for and fixes up routing on
+  a device literally named `tun0`;
+- the desktop export's `process`-matched routing rules (matching the
+  desktop app's own executable path to avoid looping back through itself)
+  are dropped -- they reference paths that don't exist in this container,
+  and this gateway already has its own, independently-verified anti-loop
+  mechanism (`autoOutboundsInterface: "auto"` + the entrypoint's route-metric
+  fix).
 
 ---
 

@@ -71,11 +71,20 @@ def build_proxy_outbound(p: dict) -> dict:
             f"headerType {p['header_type']!r} is not supported (only 'none')"
         )
 
-    user = {"id": p["uuid"], "security": "auto", "encryption": p["encryption"]}
+    # Flattened outbound settings (address/port/id directly, no vnext/users
+    # wrapper) and "raw" in place of "tcp" -- matches the shape xray-core
+    # 26.10.10 actually emits/accepts now; both were verified against the
+    # real deployed image before adopting this shape.
+    settings = {
+        "address": p["host"],
+        "port": p["port"],
+        "id": p["uuid"],
+        "encryption": p["encryption"],
+    }
     if p["flow"]:
-        user["flow"] = p["flow"]
+        settings["flow"] = p["flow"]
 
-    stream_settings = {"network": "tcp"}
+    stream_settings = {"network": "raw"}
 
     if p["security"] == "reality":
         if not p["sni"] or not p["pbk"]:
@@ -88,6 +97,7 @@ def build_proxy_outbound(p: dict) -> dict:
             "publicKey": p["pbk"],
             "shortId": p["sid"],
             "spiderX": p["spx"] or "/",
+            "mldsa65Verify": "",
         }
     elif p["security"] == "tls":
         tls_settings = {}
@@ -107,9 +117,7 @@ def build_proxy_outbound(p: dict) -> dict:
     return {
         "tag": "proxy",
         "protocol": "vless",
-        "settings": {
-            "vnext": [{"address": p["host"], "port": p["port"], "users": [user]}]
-        },
+        "settings": settings,
         "streamSettings": stream_settings,
         "mux": {"enabled": False, "concurrency": -1},
     }
