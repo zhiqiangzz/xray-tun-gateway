@@ -273,79 +273,96 @@ Everything above redirects *other containers'* traffic without ever touching
 host root, by borrowing their network namespace. The host itself isn't a
 container -- it *is* the root network namespace -- so there is no namespace
 to borrow: making the host's own traffic go through the gateway requires
-changing the host's own routing table, which needs `sudo`/`CAP_NET_ADMIN` on
+changing the host's own routing policy, which needs `sudo`/`CAP_NET_ADMIN` on
 the host. There's no way around that for this one piece.
 
-To avoid affecting other users on a shared machine, scope the change to your
-own UID with Linux policy routing (`ip rule`) instead of changing the host's
-global default route:
+`host-gateway.sh` does this with Linux policy routing (`ip rule`), scoped to
+either specific users (so other users on a shared machine are never
+affected) or everyone:
 
 ```bash
-MY_UID=$(id -u)
-GW_IP=10.90.0.2      # the docker gateway's IP; use 10.91.0.2 for podman
-TABLE=200            # any unused routing table number
-
-# 1. a table that only holds a default route via the gateway
-sudo ip route add default via "$GW_IP" table "$TABLE"
-
-# 2. for my UID: look up in "main", but reject a match that's only the
-#    plain default route (prefix length 0) -- i.e. let any more specific
-#    route (LAN, docker/podman bridges, ...) win and go out normally
-sudo ip rule add pref 100 uidrange "$MY_UID-$MY_UID" lookup main suppress_prefixlength 0
-
-# 3. for my UID: whatever didn't match a specific route above (i.e. would
-#    have gone out the default route) -- send through the gateway instead
-sudo ip rule add pref 101 uidrange "$MY_UID-$MY_UID" lookup "$TABLE"
+sudo ./host-gateway.sh enable alice bob     # only alice and bob
+sudo ./host-gateway.sh enable all           # everyone, including root
+sudo ./host-gateway.sh disable              # back to normal for everyone
+./host-gateway.sh status                    # what's currently active (no sudo needed)
 ```
 
-Other UIDs never match `uidrange $MY_UID-$MY_UID`, so they fall straight
-through to the normal built-in rule (`32766: from all lookup main`),
-completely unaffected.
+By default it targets the Docker gateway's IP (`10.90.0.2`); pass `-g
+10.91.0.2` (before the subcommand) to target the Podman one instead.
 
-**Verify:**
+### How it avoids looping on itself
+
+A naive version of this ("redirect everyone's non-local traffic to the
+gateway") breaks in a specific way: the gateway container's *own* relay
+traffic to the real VPS also transits back through the host as an ordinary
+forwarded packet, and if the redirect is unconditional, that packet gets
+sent right back to the gateway it just came from -- forever. This was
+verified directly (`ip route get <dest> from <gw-ip> iif <bridge>`, no live
+rule changes) before being fixed.
+
+The fix is a rule that comes before everything else, matching purely on
+*source address*, independent of which user (if any) the packet belongs to:
+
+```
+pref 50:        from <gateway-ip> lookup main
+pref 100-199:   (one pair per enabled user, or one unconditional pair for "all")
+                  pref N:   [uidrange U-U] lookup main suppress_prefixlength 0
+                  pref N+1: [uidrange U-U] lookup 200
+32766:          from all lookup main          (untouched, everyone else)
+```
+
+Forwarded/relay packets have no associated UID at all (that property only
+exists for packets a local process actually created), so without pref 50 the
+gateway's own return traffic would have nowhere to be exempted once the
+`uidrange` scoping is dropped for "all" mode. Matching on the gateway's own
+source address works regardless of UID, closing that gap. The `pref
+100`/`101` pair reuses the exact `suppress_prefixlength 0` mechanism
+explained earlier in this README: anyone's traffic to an address `main`
+already has a specific route for (LAN, any docker/podman bridge) stays
+local; only what would otherwise fall through to the plain default gets
+redirected.
+
+### Persisting across reboots
+
+`ip rule`/`ip route` changes are in-memory only; a reboot clears them (which
+doubles as a safety net if something's misconfigured). To have the last
+`enable`/`disable` state reapplied automatically at boot:
 
 ```bash
-ip rule show | head -5             # the two new rules, pref 100/101
-
-curl -s https://api.ipify.org      # as yourself -> the VPS's IP
-
-sudo curl -s https://api.ipify.org # as root (uid 0, doesn't match the rule)
-                                    # -> your real IP (likely still blocked
-                                    #    directly, which is the expected,
-                                    #    unaffected baseline)
+sudo cp tun-gw-host-route.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tun-gw-host-route.service
 ```
 
-**Roll back:**
+`host-gateway.sh` records the last `enable`/`disable` call in
+`host-gateway.state` (gitignored); the service's `ExecStart` just replays
+that file's content (`host-gateway.sh reapply`) on boot, and its `ExecStop`
+cleanly clears the rules if the service itself is ever stopped or disabled.
+Switching between "specific users" and "all" (or disabling) takes effect
+immediately when you next run `enable`/`disable` -- you don't need to
+restart the systemd unit for that, only the state file's replay-at-boot
+behavior depends on it.
+
+### Verify
 
 ```bash
-sudo ip rule del pref 100 uidrange "$MY_UID-$MY_UID" lookup main suppress_prefixlength 0
-sudo ip rule del pref 101 uidrange "$MY_UID-$MY_UID" lookup "$TABLE"
-sudo ip route del default via "$GW_IP" table "$TABLE"
+sudo ./host-gateway.sh enable alice
+curl -s https://api.ipify.org          # as alice -> the VPS's IP
+sudo -u root curl -s https://api.ipify.org   # uid 0, not in the enabled list
+                                              # -> the real egress, unaffected
 ```
 
-Notes:
+### `http_proxy`/`https_proxy`/`all_proxy` take priority over this
 
-- This is a live, in-memory change to the kernel's routing policy database,
-  not a persisted network config -- a host reboot reverts it on its own.
-- It's scoped to your UID, but it's still *your own* connectivity it
-  changes. The first time you run it, consider a safety-net auto-revert in
-  case something's wrong and you can't type the rollback commands yourself
-  (e.g. if this is a remote session going through the very connection that
-  might break):
-  ```bash
-  ( sleep 90 && sudo ip rule del pref 100 uidrange "$MY_UID-$MY_UID" lookup main suppress_prefixlength 0; \
-    sudo ip rule del pref 101 uidrange "$MY_UID-$MY_UID" lookup "$TABLE" ) &
-  ```
-- **`http_proxy`/`https_proxy`/`all_proxy` in your shell take priority over
-  this for any app that honors them.** Those env vars work at the
-  application layer: an app that reads them doesn't connect to the real
-  destination at all -- it connects to whatever address *they* specify, and
-  it's *that* connection the kernel-level rule above sees and routes. If that
-  address happens to fall inside an already-locally-routed subnet (for
-  example Docker's own `172.17.0.0/16`, a common default for a local proxy
-  tool), rule 100 matches it as "local" and the app's traffic never reaches
-  the gateway at all, silently. Unset those variables if you want this
-  mechanism to actually apply to apps that would otherwise use them.
+Those env vars work at the application layer: an app that reads them
+doesn't connect to the real destination at all -- it connects to whatever
+address *they* specify, and it's *that* connection the kernel-level rule
+above sees and routes. If that address happens to fall inside an
+already-locally-routed subnet (for example Docker's own `172.17.0.0/16`, a
+common default for a local proxy tool), it gets matched as "local" and the
+app's traffic never reaches the gateway at all, silently. Unset those
+variables if you want this mechanism to actually apply to apps that would
+otherwise use them.
 
 ## Troubleshooting
 

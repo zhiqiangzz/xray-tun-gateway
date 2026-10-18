@@ -1,0 +1,13 @@
+[Unit]
+Description=Reapply tun-gw host-side traffic routing rules
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/zhiqiangz/tun_proxy/host-gateway.sh reapply
+ExecStop=/home/zhiqiangz/tun_proxy/host-gateway.sh disable
+
+[Install]
+WantedBy=multi-user.target
