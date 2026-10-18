@@ -267,6 +267,86 @@ podman network rm tun-gw-network
 
 ---
 
+## Routing the host's own traffic (optional, requires sudo)
+
+Everything above redirects *other containers'* traffic without ever touching
+host root, by borrowing their network namespace. The host itself isn't a
+container -- it *is* the root network namespace -- so there is no namespace
+to borrow: making the host's own traffic go through the gateway requires
+changing the host's own routing table, which needs `sudo`/`CAP_NET_ADMIN` on
+the host. There's no way around that for this one piece.
+
+To avoid affecting other users on a shared machine, scope the change to your
+own UID with Linux policy routing (`ip rule`) instead of changing the host's
+global default route:
+
+```bash
+MY_UID=$(id -u)
+GW_IP=10.90.0.2      # the docker gateway's IP; use 10.91.0.2 for podman
+TABLE=200            # any unused routing table number
+
+# 1. a table that only holds a default route via the gateway
+sudo ip route add default via "$GW_IP" table "$TABLE"
+
+# 2. for my UID: look up in "main", but reject a match that's only the
+#    plain default route (prefix length 0) -- i.e. let any more specific
+#    route (LAN, docker/podman bridges, ...) win and go out normally
+sudo ip rule add pref 100 uidrange "$MY_UID-$MY_UID" lookup main suppress_prefixlength 0
+
+# 3. for my UID: whatever didn't match a specific route above (i.e. would
+#    have gone out the default route) -- send through the gateway instead
+sudo ip rule add pref 101 uidrange "$MY_UID-$MY_UID" lookup "$TABLE"
+```
+
+Other UIDs never match `uidrange $MY_UID-$MY_UID`, so they fall straight
+through to the normal built-in rule (`32766: from all lookup main`),
+completely unaffected.
+
+**Verify:**
+
+```bash
+ip rule show | head -5             # the two new rules, pref 100/101
+
+curl -s https://api.ipify.org      # as yourself -> the VPS's IP
+
+sudo curl -s https://api.ipify.org # as root (uid 0, doesn't match the rule)
+                                    # -> your real IP (likely still blocked
+                                    #    directly, which is the expected,
+                                    #    unaffected baseline)
+```
+
+**Roll back:**
+
+```bash
+sudo ip rule del pref 100 uidrange "$MY_UID-$MY_UID" lookup main suppress_prefixlength 0
+sudo ip rule del pref 101 uidrange "$MY_UID-$MY_UID" lookup "$TABLE"
+sudo ip route del default via "$GW_IP" table "$TABLE"
+```
+
+Notes:
+
+- This is a live, in-memory change to the kernel's routing policy database,
+  not a persisted network config -- a host reboot reverts it on its own.
+- It's scoped to your UID, but it's still *your own* connectivity it
+  changes. The first time you run it, consider a safety-net auto-revert in
+  case something's wrong and you can't type the rollback commands yourself
+  (e.g. if this is a remote session going through the very connection that
+  might break):
+  ```bash
+  ( sleep 90 && sudo ip rule del pref 100 uidrange "$MY_UID-$MY_UID" lookup main suppress_prefixlength 0; \
+    sudo ip rule del pref 101 uidrange "$MY_UID-$MY_UID" lookup "$TABLE" ) &
+  ```
+- **`http_proxy`/`https_proxy`/`all_proxy` in your shell take priority over
+  this for any app that honors them.** Those env vars work at the
+  application layer: an app that reads them doesn't connect to the real
+  destination at all -- it connects to whatever address *they* specify, and
+  it's *that* connection the kernel-level rule above sees and routes. If that
+  address happens to fall inside an already-locally-routed subnet (for
+  example Docker's own `172.17.0.0/16`, a common default for a local proxy
+  tool), rule 100 matches it as "local" and the app's traffic never reaches
+  the gateway at all, silently. Unset those variables if you want this
+  mechanism to actually apply to apps that would otherwise use them.
+
 ## Troubleshooting
 
 - **`tun0` never shows up / gateway unreachable**: check
