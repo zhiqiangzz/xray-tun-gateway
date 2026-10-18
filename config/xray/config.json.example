@@ -40,7 +40,7 @@
         "mtu": 9000,
         "gateway": ["198.18.0.1/15"],
         "autoSystemRoutingTable": ["0.0.0.0/0"],
-        "autoOutboundsInterface": "eth0"
+        "autoOutboundsInterface": "auto"
       },
       "sniffing": {
         "enabled": true,

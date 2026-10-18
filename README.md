@@ -14,8 +14,9 @@ Podman.
   `Dockerfile` / `entrypoint.sh` for the exact mechanism).
 - xray-core's native `"protocol": "tun"` inbound creates a `tun0` device and
   uses `autoSystemRoutingTable` to route all non-local traffic into it;
-  `autoOutboundsInterface` binds outbound sockets to `eth0` to avoid routing
-  back into itself.
+  `autoOutboundsInterface` is set to `"auto"`, which binds outbound sockets
+  to the container's real physical interface (whatever it's named) to avoid
+  routing back into itself.
 - Sibling containers (B/C/...) are completely unmodified: zero extra
   capabilities, zero awareness of the proxy. The only thing ever changed
   about them is their own **default route**, pointed at the gateway's static
@@ -29,10 +30,30 @@ Podman.
 ## Prerequisites
 
 - `config/xray/config.json`: copy `config/xray/config.json.example` and fill
-  in your own VLESS+Reality server details. This file contains secrets and
-  is gitignored.
+  in your own VLESS+Reality server details, or generate it from a share link
+  (see below). This file contains secrets and is gitignored.
 - A helper image with `ip` (iproute2) for the one-shot route-fixup commands
   below: `docker.io/nicolaka/netshoot:latest`. Any image with `ip` works.
+
+### Generating config.json from a vless:// link
+
+`vless2config.py` (stdlib-only, no dependencies) parses a `vless://` share
+link and splices the resulting outbound into the same inbound/dns/routing
+template used by `config/xray/config.json.example`. A share link alone only
+describes how to reach the remote server -- it says nothing about local
+listening/routing -- so the script's job is exactly that splice; the raw
+outbound fragment by itself would not be a usable gateway config.
+
+```bash
+./vless2config.py 'vless://uuid@host:port?...#remark'   # writes config_target.json
+mv config_target.json config/xray/config.json
+```
+
+Only `tcp` transport is supported, with `reality`, `tls` or no security
+(matching what this gateway has actually been tested against); other
+transports (`ws`/`grpc`/`kcp`/`quic`/`xhttp`) raise a clear error instead of
+emitting a config that looks valid but doesn't work. `config_target.json` is
+gitignored since it carries real secrets like `config.json` does.
 
 ---
 
