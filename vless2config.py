@@ -5,9 +5,9 @@ A vless:// link only encodes how to reach the remote proxy server (address,
 port, uuid, transport/security settings) -- it says nothing about how the
 local xray instance should listen or route traffic. On its own it is NOT a
 usable gateway config. This script parses the link into the "proxy" outbound
-and splices it into config.template.json (replacing its placeholder "proxy"
-outbound in place), which is what actually makes the result usable with this
-gateway.
+and splices it into config_tun.template.json (replacing its placeholder
+"proxy" outbound in place), which is what actually makes the result usable
+with this gateway.
 
 Usage:
   ./vless2config.py 'vless://uuid@host:port?...#remark'   # writes config.json
@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_TEMPLATE = HERE / "config.template.json"
+DEFAULT_TEMPLATE = HERE / "config_tun.template.json"
 DEFAULT_OUTPUT = HERE / "config.json"
 
 

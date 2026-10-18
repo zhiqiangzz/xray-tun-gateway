@@ -27,7 +27,7 @@ Podman.
   its entrypoint re-applies its internal route fix on every startup, so a
   manual `start`/`restart` is always enough to bring it back correctly.
 - Routing policy is full-tunnel: everything except private/LAN addresses
-  goes through `proxy` (see `config.template.json`'s `routing.rules` -- there
+  goes through `proxy` (see `config_tun.template.json`'s `routing.rules` -- there
   is no geoip/geosite China-direct bypass). The config also exposes a
   `socks` inbound on `127.0.0.1:10808` inside the gateway's own netns, in
   addition to the `tun` inbound, for manual debugging from inside the
@@ -36,7 +36,7 @@ Podman.
 ## Prerequisites
 
 - `config.json`: your real VLESS+Reality server details. This file contains
-  secrets and is gitignored. Either copy `config.template.json` by hand and
+  secrets and is gitignored. Either copy `config_tun.template.json` by hand and
   fill in the placeholders, or generate it from a share link (see below).
 - A helper image with `ip` (iproute2) for the one-shot route-fixup commands
   below: `docker.io/nicolaka/netshoot:latest`. Any image with `ip` works.
@@ -44,12 +44,12 @@ Podman.
 ### Generating config.json from a vless:// link
 
 `vless2config.py` parses a `vless://` share link into the "proxy" outbound
-and splices it into `config.template.json` (replacing its placeholder
+and splices it into `config_tun.template.json` (replacing its placeholder
 `proxy` outbound), writing the result to `config.json`. A share link alone
 only describes how to reach the remote server -- it says nothing about local
 listening/routing/DNS -- so the script's job is exactly that splice; the raw
 outbound fragment by itself would not be a usable gateway config, and the
-shared inbound/dns/routing structure lives once in `config.template.json`,
+shared inbound/dns/routing structure lives once in `config_tun.template.json`,
 not duplicated inside the script.
 
 The script only needs the standard library, but it's set up as a `uv`
@@ -66,7 +66,7 @@ Only `tcp` transport is supported, with `reality`, `tls` or no security
 transports (`ws`/`grpc`/`kcp`/`quic`/`xhttp`) raise a clear error instead of
 emitting a config that looks valid but doesn't work.
 
-`config.template.json` mirrors a desktop (v2rayN-style) export almost
+`config_tun.template.json` mirrors a desktop (v2rayN-style) export almost
 exactly -- same `dns` block, same `socks` + `tun` inbounds, same flattened
 vless outbound shape (`settings.address/port/id` instead of
 `vnext`/`users`), `network: "raw"`, `realitySettings.mldsa65Verify` --
