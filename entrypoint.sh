@@ -1,9 +1,11 @@
 #!/bin/sh
-# 在后台跑 xray, 等它自己的 tun0 建好, 再把引擎自动装的 eth0 default 路由降级
-# (metric 100, 不整条删除——autoOutboundsInterface 的设备绑定 socket 还要靠它连 VPS),
-# 让 xray 的 autoSystemRoutingTable 装的 "default dev tun0 metric 1" 成为非设备绑定
-# 流量(包含所有转发流量)的默认路由。见 Dockerfile 顶部注释: 这段逻辑每次容器启动都会
-# 跑一遍, 和容器怎么被重启无关。
+# Run xray in the background, wait for its own tun0 to come up, then demote
+# the engine-assigned eth0 default route (metric 100, not removed entirely --
+# autoOutboundsInterface's device-bound sockets still need it to reach the
+# VPS), so xray's autoSystemRoutingTable route ("default dev tun0 metric 1")
+# becomes the default for everything else, including all forwarded traffic.
+# See the Dockerfile header: this runs on every single container startup,
+# regardless of how the container was restarted.
 set -e
 
 GW="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
