@@ -7,15 +7,16 @@
 # Mechanism (verified live against this host before being written here --
 # see README.md for the walkthrough):
 #
-#   pref 50: from $GW_IP lookup main
+#   pref $LOOP_FIX_PREF (default 50): from $GW_IP lookup main
 #       Loop fix. The gateway container's own relay/return traffic re-enters
 #       the host as plain forwarded (no-UID) traffic. Without this rule it
 #       would be caught by the same catch-all redirect below and bounce
 #       forever between host and gateway, instead of ever reaching the real
 #       internet.
 #
-#   pref 100-199 (reserved for this script, ~50 users' worth):
-#       One pair per enabled user (or a single unconditional pair for "all"):
+#   pref $BASE_PREF-$MAX_PREF (default 100-199, reserved for this script,
+#   ~50 users' worth): one pair per enabled user (or a single unconditional
+#   pair for "all"):
 #         pref N:   [uidrange U-U] lookup main suppress_prefixlength 0
 #         pref N+1: [uidrange U-U] lookup $TABLE
 #       "Stay local if main already has a specific route, otherwise redirect
@@ -23,18 +24,28 @@
 #       everywhere else in this project; gated by uidrange only in
 #       "specific users" mode.
 #
-#   table 200: a single `default via $GW_IP` route, nothing else.
+#   table $TABLE (default 200): a single `default via $GW_IP` route, nothing else.
 #
-# Usage:
-#   sudo ./host-gateway.sh [-g GW_IP] enable all
-#   sudo ./host-gateway.sh [-g GW_IP] enable <user1> [user2 ...]
-#   sudo ./host-gateway.sh disable
-#        ./host-gateway.sh status
-#   sudo ./host-gateway.sh reapply      # used by the systemd unit at boot
+# $LOOP_FIX_PREF/$BASE_PREF/$MAX_PREF/$TABLE are this script's defaults, not
+# guarantees -- if any of them collide with something else already on a
+# given machine, override them in /etc/default/xray-tun-gateway (see
+# xray-tun-gateway.conf.example) instead of editing this file.
+#
+# Usage (once installed -- see README's "Installing" section; running this
+# straight from a git checkout works for testing, but a root-run, boot-time
+# systemd unit should never trust a path a non-root user can write to):
+#   sudo /opt/xray-tun-gateway/host-gateway.sh [-g GW_IP] enable all
+#   sudo /opt/xray-tun-gateway/host-gateway.sh [-g GW_IP] enable <user1> [user2 ...]
+#   sudo /opt/xray-tun-gateway/host-gateway.sh disable
+#        /opt/xray-tun-gateway/host-gateway.sh status
+#   sudo /opt/xray-tun-gateway/host-gateway.sh reapply   # used by the systemd unit at boot
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_FILE="$HERE/host-gateway.state"
+# ---- built-in defaults ----
+# State is runtime data, not code -- it belongs under /var/lib, independent
+# of wherever this script itself happens to be installed/run from (FHS).
+STATE_DIR=/var/lib/xray-tun-gateway
+STATE_FILE="$STATE_DIR/host-gateway.state"
 TABLE=200
 LOOP_FIX_PREF=50
 BASE_PREF=100
@@ -43,6 +54,18 @@ DEFAULT_GW_IP=10.90.0.2
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m!!\033[0m %s\n' "$*" >&2; }
+
+# ---- per-machine overrides, e.g. if TABLE/the pref range collides with
+# something else already on this host (see xray-tun-gateway.conf.example) ----
+CONFIG_FILE=/etc/default/xray-tun-gateway
+if [ -f "$CONFIG_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+if [ "$BASE_PREF" -ge "$MAX_PREF" ]; then
+  err "$CONFIG_FILE: BASE_PREF ($BASE_PREF) must be less than MAX_PREF ($MAX_PREF)"
+  exit 1
+fi
 
 usage() {
   cat >&2 <<EOF
@@ -119,6 +142,24 @@ _apply_users() {
   done
 }
 
+# Plain ICMP ping to the gateway's own bridge-local address. This only
+# confirms the gateway container is up and answering on the bridge -- not
+# that xray/tun0 inside it is actually relaying traffic end-to-end -- but
+# "container isn't running/crashed" is the failure mode that actually
+# matters at boot, and this catches it without needing anything heavier.
+# Logs the result either way (picked up by the journal under systemd) and
+# returns 1 on failure, but callers don't treat that as fatal: the
+# configured intent still gets applied, since the gateway may come up
+# moments later.
+_check_gateway() {
+  if ping -c1 -W2 "$GW_IP" >/dev/null 2>&1; then
+    log "gateway $GW_IP is reachable"
+    return 0
+  fi
+  err "gateway $GW_IP did not respond to ping -- rules are applied, but traffic routed through it will likely hang until the gateway container is up"
+  return 1
+}
+
 cmd_enable() {
   require_root
   [ $# -ge 1 ] || usage
@@ -148,11 +189,13 @@ cmd_enable() {
     _apply_users $USERS
   fi
 
+  mkdir -p "$STATE_DIR"
   {
     echo "GW_IP=$GW_IP"
     echo "MODE=$MODE"
-    echo "USERS=$USERS"
+    echo "USERS=\"$USERS\""
   } > "$STATE_FILE"
+  _check_gateway || true
   log "done. Run '$0 status' to see the current state."
 }
 
@@ -160,6 +203,7 @@ cmd_disable() {
   require_root
   log "clearing rules"
   _clear
+  mkdir -p "$STATE_DIR"
   : > "$STATE_FILE"
   log "done"
 }
@@ -184,6 +228,7 @@ cmd_reapply() {
     # shellcheck disable=SC2086
     _apply_users $USERS
   fi
+  _check_gateway || true
 }
 
 cmd_status() {
@@ -204,6 +249,9 @@ cmd_status() {
       echo "currently enabled: $USERS (gateway=${GW_IP:-?})"
     else
       echo "currently disabled"
+    fi
+    if [ -n "${GW_IP:-}" ] && [ -n "${MODE:-}" ]; then
+      _check_gateway || true
     fi
   else
     echo "currently disabled"

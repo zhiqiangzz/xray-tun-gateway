@@ -1,0 +1,25 @@
+# Per-machine overrides for host-gateway.sh.
+#
+# Install as /etc/default/xray-tun-gateway (plain shell, sourced directly --
+# no quoting surprises as long as values don't contain spaces or $).
+# Everything here is optional; host-gateway.sh works with none of this
+# present, using the defaults shown below.
+#
+#   sudo cp xray-tun-gateway.conf.example /etc/default/xray-tun-gateway
+#   sudo $EDITOR /etc/default/xray-tun-gateway
+
+# The tun gateway container's IP, used when -g/--gateway isn't passed on
+# the command line.
+#DEFAULT_GW_IP=10.90.0.2
+
+# Routing table number and ip-rule priority range this script reserves for
+# itself. The defaults were verified free of collisions on the machine this
+# project was originally built on -- they are NOT guaranteed free on yours.
+# Before relying on the defaults, check:
+#   ip rule show | awk -F: '$1+0 == 50 || ($1+0 >= 100 && $1+0 <= 199)'
+#   ip route show table 200
+# If either prints anything, pick different numbers here.
+#TABLE=200
+#LOOP_FIX_PREF=50
+#BASE_PREF=100
+#MAX_PREF=199

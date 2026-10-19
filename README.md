@@ -278,13 +278,53 @@ the host. There's no way around that for this one piece.
 
 `host-gateway.sh` does this with Linux policy routing (`ip rule`), scoped to
 either specific users (so other users on a shared machine are never
-affected) or everyone:
+affected) or everyone.
+
+### Installing
+
+A root-run, boot-time systemd unit should never execute a script a
+non-root user can edit -- that's a straightforward local-privilege-escalation
+path (compromise the user, rewrite the script, wait for the next reboot).
+`/home/you/tun_proxy` is writable by `you`, so it's the wrong place for the
+*deployed* copy to live, even though it's the right place to develop it.
+Install a root-owned copy under `/opt` instead, and point everything --
+manual invocations and the systemd unit alike -- at that copy from then on;
+treat the git checkout as source to edit and re-install from, not something
+to run directly as root:
 
 ```bash
-sudo ./host-gateway.sh enable alice bob     # only alice and bob
-sudo ./host-gateway.sh enable all           # everyone, including root
-sudo ./host-gateway.sh disable              # back to normal for everyone
-./host-gateway.sh status                    # what's currently active (no sudo needed)
+sudo mkdir -p /opt/xray-tun-gateway
+sudo install -o root -g root -m 0755 host-gateway.sh /opt/xray-tun-gateway/host-gateway.sh
+```
+
+Re-run that `install` line after editing the script to deploy the change.
+Runtime state lives separately, under `/var/lib/xray-tun-gateway/`
+(created automatically on first use) -- state is data the script produces,
+not code, and per the FHS it doesn't belong alongside the script itself,
+installed or not.
+
+If you're deploying this on a machine other than the one it was built on,
+the table number and `ip rule` priority range it reserves for itself
+(`200`, and `50`/`100-199`) aren't guaranteed to be free there -- check
+first, and override them if needed:
+
+```bash
+ip rule show | awk -F: '$1+0 == 50 || ($1+0 >= 100 && $1+0 <= 199)'
+ip route show table 200
+# if either prints anything, pick different numbers:
+sudo cp xray-tun-gateway.conf.example /etc/default/xray-tun-gateway
+sudo $EDITOR /etc/default/xray-tun-gateway
+```
+
+`host-gateway.sh` sources `/etc/default/xray-tun-gateway` (plain
+`KEY=value`, like the state file) if it exists, before anything else --
+see the comments in `xray-tun-gateway.conf.example` for what's overridable.
+
+```bash
+sudo /opt/xray-tun-gateway/host-gateway.sh enable alice bob   # only alice and bob
+sudo /opt/xray-tun-gateway/host-gateway.sh enable all         # everyone, including root
+sudo /opt/xray-tun-gateway/host-gateway.sh disable            # back to normal for everyone
+/opt/xray-tun-gateway/host-gateway.sh status                  # what's active (no sudo needed)
 ```
 
 By default it targets the Docker gateway's IP (`10.90.0.2`); pass `-g
@@ -334,19 +374,66 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tun-gw-host-route.service
 ```
 
+(Do this after the install step above -- the unit's `ExecStart` points at
+`/opt/xray-tun-gateway/host-gateway.sh`, which needs to already exist.)
+
 `host-gateway.sh` records the last `enable`/`disable` call in
-`host-gateway.state` (gitignored); the service's `ExecStart` just replays
-that file's content (`host-gateway.sh reapply`) on boot, and its `ExecStop`
+`/var/lib/xray-tun-gateway/host-gateway.state`; the service's `ExecStart`
+just replays that file's content (`host-gateway.sh reapply`) on boot, and
+its `ExecStop`
 cleanly clears the rules if the service itself is ever stopped or disabled.
 Switching between "specific users" and "all" (or disabling) takes effect
 immediately when you next run `enable`/`disable` -- you don't need to
 restart the systemd unit for that, only the state file's replay-at-boot
 behavior depends on it.
 
+### Controlling it via systemctl
+
+Once the unit is installed, `systemctl` works as the day-to-day control
+surface for *whatever is currently persisted* -- it replays or clears the
+same state the script itself manages, it doesn't take a user list of its
+own:
+
+```bash
+systemctl status tun-gw-host-route    # active/inactive, plus the log lines below
+sudo systemctl restart tun-gw-host-route   # re-run reapply now, without retyping which users
+sudo systemctl stop tun-gw-host-route      # disable (same as `host-gateway.sh disable`)
+journalctl -u tun-gw-host-route            # full history
+```
+
+To change *which* users are covered, that still goes through the script
+directly (`enable`/`disable` write the state `systemctl` later replays) --
+`systemctl start`/`restart` re-apply that state, they don't ask who to
+apply it to.
+
+`reapply` (and `enable`) also ping the gateway's own IP right after applying
+the rules and log the result either way, so `systemctl status` (which shows
+the unit's most recent log lines) surfaces the mode, the users, and whether
+the gateway actually answered -- without needing a separate `status` call:
+
+```
+$ systemctl status tun-gw-host-route
+...
+     Oct 19 02:10:03 host-gateway.sh[1234]: ==> replaying state: gateway=10.90.0.2, mode=users, users=alice bob
+     Oct 19 02:10:03 host-gateway.sh[1234]: ==> gateway 10.90.0.2 is reachable
+```
+
+If the gateway container isn't up, that last line becomes an `!!` error
+instead (still just logged, not fatal -- the configured intent stays
+applied, since the container may come up moments later):
+
+```
+     Oct 19 02:10:03 host-gateway.sh[1234]: !! gateway 10.90.0.2 did not respond to ping -- rules are applied, but traffic routed through it will likely hang until the gateway container is up
+```
+
+This is a plain ICMP ping to the gateway's bridge-local address -- it only
+confirms the container is up and answering on the bridge, not that
+xray/`tun0` inside it is actually relaying traffic end-to-end.
+
 ### Verify
 
 ```bash
-sudo ./host-gateway.sh enable alice
+sudo /opt/xray-tun-gateway/host-gateway.sh enable alice
 curl -s https://api.ipify.org          # as alice -> the VPS's IP
 sudo -u root curl -s https://api.ipify.org   # uid 0, not in the enabled list
                                               # -> the real egress, unaffected

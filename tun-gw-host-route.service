@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/home/zhiqiangz/tun_proxy/host-gateway.sh reapply
-ExecStop=/home/zhiqiangz/tun_proxy/host-gateway.sh disable
+ExecStart=/opt/xray-tun-gateway/host-gateway.sh reapply
+ExecStop=/opt/xray-tun-gateway/host-gateway.sh disable
 
 [Install]
 WantedBy=multi-user.target
