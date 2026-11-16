@@ -107,10 +107,15 @@ docker run -d --name tun-gw-xray \
   --sysctl net.ipv4.conf.all.forwarding=1 \
   -e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= -e NO_PROXY= \
   -e http_proxy= -e https_proxy= -e all_proxy= -e no_proxy= \
+  -p 127.0.53.1:53:53/udp -p 127.0.53.1:53:53/tcp \
   -v "$(pwd)/config.json:/usr/local/etc/xray/config.json:ro" \
   tun-gw-xray:local
 ```
 
+- `-p 127.0.53.1:53:53/...`: publishes xray's `dns-in` inbound on a
+  host-only loopback address, for
+  [Stopping DNS leaks](#stopping-dns-leaks-optional). Harmless if you never
+  turn that on.
 - `--user 0`: the base image defaults to a non-root UID, and Linux does not
   propagate `--cap-add`-granted capabilities to a non-root process without
   explicit ambient capabilities. Without this, building `tun0` / editing
@@ -209,11 +214,14 @@ podman run -d --name tun-gw-xray \
   --cap-add NET_ADMIN --device /dev/net/tun --user 0 \
   --sysctl net.ipv4.conf.all.forwarding=1 \
   --http-proxy=false \
+  -p 127.0.53.1:53:53/udp -p 127.0.53.1:53:53/tcp \
   -v "$(pwd)/config.json:/usr/local/etc/xray/config.json:ro" \
   tun-gw-xray:local
 ```
 
 - `--user 0`: same reason as Docker above.
+- `-p 127.0.53.1:53:53/...`: same as Docker above (binding port 53 needs
+  rootful Podman).
 - `--http-proxy=false`: stops Podman from injecting your shell's own
   `HTTP_PROXY`/`HTTPS_PROXY` env vars into the container.
 
@@ -438,6 +446,81 @@ curl -s https://api.ipify.org          # as alice -> the VPS's IP
 sudo -u root curl -s https://api.ipify.org   # uid 0, not in the enabled list
                                               # -> the real egress, unaffected
 ```
+
+### Stopping DNS leaks (optional)
+
+The `ip rule`s above route an enabled user's *connections* through the
+gateway, but not their *DNS lookups*. glibc sends lookups to
+`nameserver 127.0.0.53` -- systemd-resolved -- which then re-sends them
+upstream as a brand-new packet under **its own** uid, out of `eth0`, in
+plaintext. The per-uid rules never see it. (Domain-based routing still
+works thanks to sniffing; what leaks is *which names you look up*, and
+you can get poisoned answers back.)
+
+`--dns` closes that, plus one more hole:
+
+```
+enabled user's app ── udp/tcp dport 53, to ANY address (127.0.0.53, 8.8.8.8, ...)
+   │  nft nat/output: meta skuid <user> → dnat to 127.0.53.1:53
+   ▼
+docker-proxy on 127.0.53.1:53  (from `-p 127.0.53.1:53:53/...`)
+   │  over the bridge, never eth0
+   ▼
+gateway: xray "dns-in" inbound → dns outbound → xray's DNS module
+   (your config.json's dns.servers decide: DoH via proxy, CN domains direct, ...)
+```
+
+- **IPv6 guard**: table 200 is IPv4-only, so the same users' IPv6 to
+  global unicast (`2000::/3`) is rejected outright, instead of silently
+  bypassing the gateway if the host ever gets an IPv6 address.
+- **Fails closed**: if the gateway is down, these users' lookups error out;
+  they never fall back to resolved.
+- **Other users are untouched**: they keep using resolved and `eth0`.
+- **Why `127.0.53.1:53`**: a privileged port on a dedicated loopback
+  address. On a high port (say `127.0.0.1:5335`), any local user could bind
+  it while the gateway is stopped and read -- or forge -- the protected
+  users' DNS.
+- **Non-A/AAAA queries** (HTTPS/SVCB, MX, TXT, ...) are answered empty by
+  xray's dns outbound itself, never forwarded anywhere (verified on xray
+  26.10.10).
+
+Requirements: the gateway container started with the `-p 127.0.53.1:53:53`
+flags shown above, a `config.json` generated from a current template (it
+needs the `dns-in` inbound and its routing rule), and `nft` on the host
+(installed by default on Ubuntu).
+
+```bash
+sudo /opt/xray-tun-gateway/host-gateway.sh --dns enable alice
+# or make it the default for every `enable`:
+echo HIJACK_DNS=1 | sudo tee -a /etc/default/xray-tun-gateway
+```
+
+It's recorded in the state file, so `reapply` (and the systemd unit) restore
+it at boot; `disable` removes the nft table along with everything else.
+
+Verify -- in one terminal:
+
+```bash
+sudo tcpdump -ni eth0 port 53
+```
+
+then, as alice, each of these should resolve normally *and* print nothing in
+tcpdump:
+
+```bash
+getent hosts www.google.com          # via the 127.0.0.53 stub
+dig @<a resolver from 'resolvectl status'> www.google.com   # hardcoded resolver
+dig www.google.com HTTPS             # non-A/AAAA query
+```
+
+while the same `getent hosts` as a user *not* enabled shows up in tcpdump
+as usual.
+
+Not covered: containers alice starts with (rootful) Docker -- they're
+created by `dockerd`, live in their own network namespace, and none of the
+host's per-uid rules apply to them (not just DNS: all their traffic). Attach
+them to `tun-gw-network` as in "Start a new container and attach it to the
+gateway" above.
 
 ### `http_proxy`/`https_proxy`/`all_proxy` take priority over this
 

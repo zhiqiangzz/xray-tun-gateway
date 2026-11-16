@@ -171,6 +171,16 @@
           "8.8.8.8"
         ]
       }
+    },
+    {
+      "tag": "dns-in",
+      "port": 53,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "1.1.1.1",
+        "port": 53,
+        "network": "tcp,udp"
+      }
     }
   ],
   "outbounds": [
@@ -219,6 +229,12 @@
   "routing": {
     "domainStrategy": "AsIs",
     "rules": [
+      {
+        "inboundTag": [
+          "dns-in"
+        ],
+        "outboundTag": "dns"
+      },
       {
         "port": "135,137-139,5353",
         "network": "udp",

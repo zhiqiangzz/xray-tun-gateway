@@ -23,3 +23,12 @@
 #LOOP_FIX_PREF=50
 #BASE_PREF=100
 #MAX_PREF=199
+
+# DNS-leak protection (see README, "Stopping DNS leaks"). 1 = on by default
+# for `enable` (same as passing --dns); --no-dns overrides it per call.
+# DNS_TARGET must match the gateway container's `-p <DNS_TARGET>:53:53/udp`
+# (+ /tcp) -- a dedicated loopback address on privileged port 53, so no
+# unprivileged local user can ever bind it and answer in the gateway's place.
+#HIJACK_DNS=0
+#DNS_TARGET=127.0.53.1
+#NFT_TABLE=xray_tun_gateway

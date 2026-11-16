@@ -26,6 +26,19 @@
 #
 #   table $TABLE (default 200): a single `default via $GW_IP` route, nothing else.
 #
+#   Optional DNS-leak protection (--dns, or HIJACK_DNS=1), nft table
+#   `inet $NFT_TABLE`:
+#       nat/output: the same users' DNS queries (udp+tcp dport 53, to ANY
+#       address -- the 127.0.0.53 stub, or a hardcoded server) are DNAT'ed
+#       to $DNS_TARGET:53, where the gateway container's xray "dns-in"
+#       inbound is published (`-p $DNS_TARGET:53:53/udp` + tcp). Without
+#       this, glibc hands the query to systemd-resolved on 127.0.0.53, and
+#       resolved re-sends it upstream under ITS OWN uid -- out eth0,
+#       untouched by the uidrange rules above.
+#       filter/output: the same users' IPv6 to global unicast (2000::/3) is
+#       rejected -- table $TABLE is IPv4-only, so any IPv6 path would bypass
+#       the gateway entirely.
+#
 # $LOOP_FIX_PREF/$BASE_PREF/$MAX_PREF/$TABLE are this script's defaults, not
 # guarantees -- if any of them collide with something else already on a
 # given machine, override them in /etc/default/xray-tun-gateway (see
@@ -36,6 +49,7 @@
 # systemd unit should never trust a path a non-root user can write to):
 #   sudo /opt/xray-tun-gateway/host-gateway.sh [-g GW_IP] enable all
 #   sudo /opt/xray-tun-gateway/host-gateway.sh [-g GW_IP] enable <user1> [user2 ...]
+#   sudo /opt/xray-tun-gateway/host-gateway.sh --dns enable <user1> ...  # + DNS-leak protection
 #   sudo /opt/xray-tun-gateway/host-gateway.sh disable
 #        /opt/xray-tun-gateway/host-gateway.sh status
 #   sudo /opt/xray-tun-gateway/host-gateway.sh reapply   # used by the systemd unit at boot
@@ -51,6 +65,9 @@ LOOP_FIX_PREF=50
 BASE_PREF=100
 MAX_PREF=199
 DEFAULT_GW_IP=10.90.0.2
+HIJACK_DNS=0
+DNS_TARGET=127.0.53.1
+NFT_TABLE=xray_tun_gateway
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m!!\033[0m %s\n' "$*" >&2; }
@@ -70,8 +87,8 @@ fi
 usage() {
   cat >&2 <<EOF
 Usage:
-  sudo $0 [-g GW_IP] enable all
-  sudo $0 [-g GW_IP] enable <user1> [user2 ...]
+  sudo $0 [-g GW_IP] [--dns|--no-dns] enable all
+  sudo $0 [-g GW_IP] [--dns|--no-dns] enable <user1> [user2 ...]
   sudo $0 disable
        $0 status
   sudo $0 reapply
@@ -86,12 +103,15 @@ require_root() {
   fi
 }
 
-# ---- parse -g/--gateway (can appear anywhere before the subcommand) ----
+# ---- parse -g/--gateway, --dns/--no-dns (can appear anywhere) ----
 GW_IP=""
+DNS_FLAG=""
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -g|--gateway) GW_IP="${2:?missing value for -g}"; shift 2 ;;
+    --dns)    DNS_FLAG=1; shift ;;
+    --no-dns) DNS_FLAG=0; shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -116,6 +136,9 @@ _clear() {
     ip rule del pref "$pref" $rest 2>/dev/null || true
   done < <(ip rule show)
   ip route flush table "$TABLE" >/dev/null 2>&1 || true
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet "$NFT_TABLE" 2>/dev/null || true
+  fi
 }
 
 _apply_common() {
@@ -130,6 +153,7 @@ _apply_all() {
 
 _apply_users() {
   local pref=$BASE_PREF uid name
+  DNS_UIDS=""
   for name in "$@"; do
     uid="$(id -u "$name" 2>/dev/null)" || { err "user not found: $name"; exit 1; }
     if [ "$pref" -gt "$((MAX_PREF - 1))" ]; then
@@ -138,8 +162,62 @@ _apply_users() {
     fi
     ip rule add pref "$pref" uidrange "$uid-$uid" lookup main suppress_prefixlength 0
     ip rule add pref "$((pref + 1))" uidrange "$uid-$uid" lookup "$TABLE"
+    DNS_UIDS="${DNS_UIDS:+$DNS_UIDS, }$uid"
     pref=$((pref + 2))
   done
+}
+
+# Shared by enable/reapply: routing rules, then (optionally) DNS protection.
+_apply() {
+  _apply_common
+  if [ "$MODE" = all ]; then
+    _apply_all
+    if [ "$DNS" = 1 ]; then _apply_dns all; fi
+  else
+    # shellcheck disable=SC2086
+    _apply_users $USERS
+    if [ "$DNS" = 1 ]; then _apply_dns "$DNS_UIDS"; fi
+  fi
+}
+
+# DNS-leak protection for the given uids (comma-separated), or "all".
+#
+# Exclusions, evaluated first:
+#   - daddr $GW_IP / $DNS_TARGET: docker-proxy (root) relays the redirected
+#     query on to $GW_IP:53 -- hijacking that again would loop forever in
+#     "all" mode. Queries already aimed at the gateway need nothing anyway.
+#   - in "all" mode, systemd-resolved's own uid: everyone's queries are
+#     already redirected before they reach it, so its upstream traffic is
+#     left alone rather than hijacked a second time.
+_apply_dns() {
+  local who="$1" match resolved_uid excl=""
+  if ! command -v nft >/dev/null 2>&1; then
+    err "--dns needs nft (apt install nftables)"
+    exit 1
+  fi
+  if [ "$who" = all ]; then
+    match=""
+    if resolved_uid="$(id -u systemd-resolve 2>/dev/null)"; then
+      excl="meta skuid $resolved_uid return"
+    fi
+  else
+    match="meta skuid { $who }"
+  fi
+  nft -f - <<EOF
+table inet $NFT_TABLE {
+  chain dns_redirect {
+    type nat hook output priority dstnat; policy accept;
+    ip daddr { $GW_IP, $DNS_TARGET } return
+    $excl
+    $match udp dport 53 dnat ip to $DNS_TARGET:53
+    $match tcp dport 53 dnat ip to $DNS_TARGET:53
+  }
+  chain ipv6_guard {
+    type filter hook output priority filter; policy accept;
+    $match ip6 daddr 2000::/3 reject
+  }
+}
+EOF
 }
 
 # Plain ICMP ping to the gateway's own bridge-local address. This only
@@ -160,12 +238,24 @@ _check_gateway() {
   return 1
 }
 
+# Only meaningful with DNS protection on: is anything actually listening
+# where the queries are being redirected to? If not, the protected users'
+# DNS fails closed (errors, never leaks) until the gateway is up.
+_check_dns() {
+  if ss -Hlun "src $DNS_TARGET:53" 2>/dev/null | grep -q .; then
+    log "DNS listener $DNS_TARGET:53 is up"
+    return 0
+  fi
+  err "nothing listening on $DNS_TARGET:53 -- protected users' DNS will fail until the gateway container is (re)started with '-p $DNS_TARGET:53:53/udp -p $DNS_TARGET:53:53/tcp'"
+  return 1
+}
+
 cmd_enable() {
   require_root
   [ $# -ge 1 ] || usage
   GW_IP="${GW_IP:-$DEFAULT_GW_IP}"
 
-  local MODE USERS
+  local MODE USERS DNS="${DNS_FLAG:-$HIJACK_DNS}"
   if [ "$1" = all ]; then
     MODE=all
     USERS=""
@@ -180,22 +270,18 @@ cmd_enable() {
 
   log "clearing old rules"
   _clear
-  log "applying new rules (gateway=$GW_IP, mode=$MODE${USERS:+, users=$USERS})"
-  _apply_common
-  if [ "$MODE" = all ]; then
-    _apply_all
-  else
-    # shellcheck disable=SC2086
-    _apply_users $USERS
-  fi
+  log "applying new rules (gateway=$GW_IP, mode=$MODE${USERS:+, users=$USERS}, dns=$DNS)"
+  _apply
 
   mkdir -p "$STATE_DIR"
   {
     echo "GW_IP=$GW_IP"
     echo "MODE=$MODE"
     echo "USERS=\"$USERS\""
+    echo "DNS=$DNS"
   } > "$STATE_FILE"
   _check_gateway || true
+  if [ "$DNS" = 1 ]; then _check_dns || true; fi
   log "done. Run '$0 status' to see the current state."
 }
 
@@ -214,21 +300,17 @@ cmd_reapply() {
     log "state file is empty/missing, nothing to do"
     exit 0
   fi
-  local GW_IP MODE USERS
+  local GW_IP MODE USERS DNS
   # shellcheck disable=SC1090
   source "$STATE_FILE"
   [ -n "${MODE:-}" ] || exit 0
   GW_IP="${GW_IP:-$DEFAULT_GW_IP}"
-  log "replaying state: gateway=$GW_IP, mode=$MODE${USERS:+, users=$USERS}"
+  DNS="${DNS:-0}"
+  log "replaying state: gateway=$GW_IP, mode=$MODE${USERS:+, users=$USERS}, dns=$DNS"
   _clear
-  _apply_common
-  if [ "$MODE" = all ]; then
-    _apply_all
-  else
-    # shellcheck disable=SC2086
-    _apply_users $USERS
-  fi
+  _apply
   _check_gateway || true
+  if [ "$DNS" = 1 ]; then _check_dns || true; fi
 }
 
 cmd_status() {
@@ -239,19 +321,27 @@ cmd_status() {
   echo "=== table $TABLE ==="
   ip route show table "$TABLE" 2>/dev/null || echo "(empty)"
   echo
+  echo "=== nft table inet $NFT_TABLE (DNS-leak protection) ==="
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "(listing nft rules needs root)"
+  else
+    nft list table inet "$NFT_TABLE" 2>/dev/null || echo "(none)"
+  fi
+  echo
   if [ -s "$STATE_FILE" ]; then
-    local GW_IP MODE USERS
+    local GW_IP MODE USERS DNS
     # shellcheck disable=SC1090
     source "$STATE_FILE"
     if [ "${MODE:-}" = all ]; then
-      echo "currently enabled: all users (gateway=${GW_IP:-?})"
+      echo "currently enabled: all users (gateway=${GW_IP:-?}, dns=${DNS:-0})"
     elif [ -n "${USERS:-}" ]; then
-      echo "currently enabled: $USERS (gateway=${GW_IP:-?})"
+      echo "currently enabled: $USERS (gateway=${GW_IP:-?}, dns=${DNS:-0})"
     else
       echo "currently disabled"
     fi
     if [ -n "${GW_IP:-}" ] && [ -n "${MODE:-}" ]; then
       _check_gateway || true
+      if [ "${DNS:-0}" = 1 ]; then _check_dns || true; fi
     fi
   else
     echo "currently disabled"
