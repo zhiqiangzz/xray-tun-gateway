@@ -122,7 +122,7 @@ public resolver that can't know LAN names anyway, and the obsolete
 
 ```bash
 docker build -t tun-gw-xray:local \
-  --build-arg XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.10.10 .
+  --build-arg XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.11.9 .
 ```
 
 ### 2. Create the network
@@ -230,7 +230,7 @@ and Podman stacks can coexist on the same machine.
 
 ```bash
 podman build -t tun-gw-xray:local \
-  --build-arg XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.10.10 .
+  --build-arg XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.11.9 .
 ```
 
 ### 2. Create the network
@@ -521,7 +521,7 @@ gateway: xray "dns-in" inbound → dns outbound → xray's DNS module
   users' DNS.
 - **Non-A/AAAA queries** (HTTPS/SVCB, MX, TXT, ...) are answered empty by
   xray's dns outbound itself, never forwarded anywhere (verified on xray
-  26.10.10).
+  26.10.10 and 26.11.9).
 
 Requirements: the gateway container started with the `-p 127.0.53.1:53:53`
 flags shown above, a `config.json` generated from a current template (it

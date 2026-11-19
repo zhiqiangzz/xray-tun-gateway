@@ -86,7 +86,7 @@ def build_proxy_outbound(p: dict) -> dict:
     # Flattened outbound settings (address/port/id directly, no vnext/users
     # wrapper) and "raw" in place of "tcp" -- matches the shape xray-core
     # 26.10.10 actually emits/accepts now; both were verified against the
-    # real deployed image before adopting this shape.
+    # real deployed image before adopting this shape (and still hold on 26.11.9).
     settings = {
         "address": p["host"],
         "port": p["port"],

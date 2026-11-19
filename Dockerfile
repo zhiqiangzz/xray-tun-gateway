@@ -14,7 +14,7 @@
 # container is restarted (crash recovery, host reboot auto-start, manual
 # restart) -- all inside the container's own PID 1, with no external script
 # involved.
-ARG XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.10.10
+ARG XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.11.9
 
 FROM busybox:1.36-musl AS tools
 
