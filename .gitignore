@@ -1,3 +1,4 @@
 config.json
 .venv/
 host-gateway.state
+.env

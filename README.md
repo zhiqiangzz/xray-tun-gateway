@@ -217,6 +217,25 @@ docker rm -f tun-gw-xray      # remove the gateway (sibling containers are untou
 docker network rm tun-gw-network
 ```
 
+### Alternative: docker compose
+
+`docker-compose.yml` holds every option of the `docker run` in step 3, so
+they live in the repo rather than in shell history (`docker save`/`load`
+moves the image, never these). The network stays a one-time manual step --
+it's `external` in the compose file, because sibling containers attach to it
+too (so `compose down` must not remove it) and compose won't adopt a network
+it didn't create:
+
+```bash
+docker network create --subnet 10.90.0.0/24 tun-gw-network   # once, as in step 2
+docker compose up -d --build
+docker compose down          # removes only the gateway container
+```
+
+Switching an existing `docker run` gateway over: `docker rm -f tun-gw-xray`
+first (same container name), then `docker compose up -d`. Non-default
+names/addresses go in a `.env` next to the compose file -- see its header.
+
 ---
 
 ## Podman

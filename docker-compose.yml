@@ -1,0 +1,70 @@
+# The gateway container with every `docker run` option from README.md's
+# "Docker" section, so the runtime settings travel with the repo instead of
+# living only in a shell history. `docker save`/`load` carries the image,
+# never these.
+#
+#   docker network create --subnet 10.90.0.0/24 tun-gw-network   # once
+#   docker compose up -d --build     # build (if needed) + start
+#   docker compose logs -f
+#   docker compose down              # stop + remove the gateway container only
+#
+# The network is `external`: created once by hand, never by compose. Sibling
+# containers attach to it too, so `compose down` must not try to remove it,
+# and compose refuses to adopt a network it didn't create itself (existing
+# deployments made it with `docker network create`).
+#
+# Defaults match README.md; override any of them in a `.env` file next to
+# this one (or the environment), e.g. if 10.90.0.0/24 is taken on a host:
+#   TUN_GW_NETWORK=tun-gw-network     # created with --subnet 10.91.0.0/24
+#   TUN_GW_IP=10.91.0.2               # then: host-gateway.sh -g 10.91.0.2 ...
+#   TUN_GW_DNS_BIND=127.0.53.1        # must match host-gateway.sh's DNS_TARGET
+#   XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.11.9
+
+services:
+  tun-gw-xray:
+    build:
+      context: .
+      args:
+        XRAY_BASE_IMAGE: ${XRAY_BASE_IMAGE:-ghcr.io/xtls/xray-core:26.11.9}
+    image: tun-gw-xray:local
+    # Fixed names: sibling containers and host-gateway.sh refer to the
+    # gateway and its network by name/IP, not by a compose-generated one.
+    container_name: ${TUN_GW_NAME:-tun-gw-xray}
+    networks:
+      tun-gw-network:
+        ipv4_address: ${TUN_GW_IP:-10.90.0.2}
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    # The base image's non-root user can't use the NET_ADMIN cap granted
+    # above (no ambient capabilities) -- see README.
+    user: "0"
+    sysctls:
+      net.ipv4.conf.all.forwarding: "1"
+    # Scrub Docker's daemon-level proxy injection (~/.docker/config.json
+    # proxies.default), which would otherwise override the real upstream path.
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      no_proxy: ""
+    # xray's dns-in inbound, for host-gateway.sh --dns. Privileged port on a
+    # dedicated loopback address: no unprivileged local user can bind it.
+    ports:
+      - "${TUN_GW_DNS_BIND:-127.0.53.1}:53:53/udp"
+      - "${TUN_GW_DNS_BIND:-127.0.53.1}:53:53/tcp"
+    volumes:
+      - ./config.json:/usr/local/etc/xray/config.json:ro
+    # Same as the plain `docker run`: no auto-start. The entrypoint re-applies
+    # its route fix on every start, so "unless-stopped" is safe if you want it.
+    restart: "no"
+
+networks:
+  tun-gw-network:
+    name: ${TUN_GW_NETWORK:-tun-gw-network}
+    external: true
