@@ -202,6 +202,32 @@ docker run --rm --network container:my-app --cap-add NET_ADMIN \
   route replace default via 10.90.0.2
 ```
 
+#### Already-running containers: `attach-gw.sh`
+
+For a container that's already running and can't easily be recreated:
+
+```bash
+./attach-gw.sh my-app other-app          # -g 10.91.0.2 for a non-default gateway
+```
+
+For each container it re-points the default route at the gateway (the
+command above), then checks how the container was created:
+- **with `--dns 10.90.0.2`**: DNS is left alone -- it already goes to the
+  gateway and survives restarts;
+- **without it** (or with `--dns` some other server): its nameservers are
+  replaced with the gateway in Docker's per-container `resolv.conf`. That
+  drops the embedded `127.0.0.11`, so container-to-container *names* stop
+  resolving in that container -- recreate it with `--dns` instead if it needs
+  them.
+
+Both changes are runtime-only: a container restart recreates its network
+namespace and Docker regenerates its `resolv.conf`, so re-run the script
+after every restart (a `--dns` container then only needs the route). It needs
+docker access only, no sudo, and works on images without a shell (e.g.
+distroless): both edits run from a throwaway container of the gateway image.
+Stopped containers, ones on another network, and `host`/`none`/`container:`
+network modes are reported and skipped.
+
 ### 5. Verify the tunnel
 
 ```bash
