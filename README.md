@@ -170,15 +170,27 @@ docker run --rm --network container:tun-gw-xray --entrypoint ip \
 
 ### 4. Start a new container and attach it to the gateway
 
-Start your own container completely normally — no extra flags, no extra
-capabilities:
+Start your own container normally — no extra capabilities, just
+`--dns 10.90.0.2`:
 
 ```bash
-docker run -d --name my-app --network tun-gw-network \
+docker run -d --name my-app --network tun-gw-network --dns 10.90.0.2 \
   -e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= -e NO_PROXY= \
   -e http_proxy= -e https_proxy= -e all_proxy= -e no_proxy= \
   my-image
 ```
+
+`--dns 10.90.0.2` is what keeps `my-app`'s DNS from leaking. Without it,
+Docker's embedded resolver (`127.0.0.11`, always the container's
+`nameserver` on a user-defined network) forwards to the *host's* resolver
+from the *host's* namespace -- `# ExtServers: [host(127.0.0.53)]` in the
+container's `/etc/resolv.conf` -- straight out the host's uplink, whatever
+the container's default route says. With it, the upstream is the gateway's
+`dns-in` inbound, queried from the container's own namespace over the
+bridge (`# ExtServers: [10.90.0.2]`), and xray's DNS module answers.
+`127.0.0.11` stays the `nameserver`, so container-to-container name
+resolution keeps working. It can only be set at creation: for an existing
+container, recreate it (in compose: `dns: [10.90.0.2]` on the service).
 
 Then point its default route at the gateway. This is the *only* command that
 ever touches `my-app`; it runs inside `my-app`'s own network namespace (never
@@ -195,6 +207,11 @@ docker run --rm --network container:my-app --cap-add NET_ADMIN \
 ```bash
 docker exec my-app curl -s https://api.ipify.org
 # should print the VPS's IP, not your own
+
+docker exec my-app cat /etc/resolv.conf | grep ExtServers
+# should be: # ExtServers: [10.90.0.2]   (host(127.0.0.53) = DNS leaking)
+docker logs --since 1m tun-gw-xray 2>&1 | grep dns-in
+# my-app's lookups show up as: from <my-app IP>:... [dns-in -> dns]
 ```
 
 ### 6. Detach a container (revert to the normal gateway)
@@ -290,8 +307,11 @@ podman run --rm --network container:tun-gw-xray --entrypoint ip \
 ### 4. Start a new container and attach it to the gateway
 
 ```bash
-podman run -d --name my-app --network tun-gw-network --http-proxy=false my-image
+podman run -d --name my-app --network tun-gw-network --dns 10.91.0.2 \
+  --http-proxy=false my-image
 ```
+
+`--dns 10.91.0.2`: same reason as Docker above (not verified on Podman).
 
 ```bash
 podman run --rm --network container:my-app --cap-add NET_ADMIN \
