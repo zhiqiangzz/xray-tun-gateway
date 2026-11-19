@@ -155,7 +155,7 @@
         "routeOnly": true
       },
       "settings": {
-        "name": "utun72",
+        "name": "tun0",
         "MTU": 9000,
         "gateway": [
           "172.18.0.1/30",
