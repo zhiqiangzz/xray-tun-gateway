@@ -61,6 +61,36 @@ uv sync                                                  # one-time: creates .ve
 uv run vless2config.py 'vless://uuid@host:port?...#remark'   # writes config.json
 ```
 
+It also reads this host's `/etc/resolv.conf` and adds a **local DNS split**:
+names under the resolver's own `search`/`domain` suffixes (e.g. `lan` from a
+home router's `search lan` / `nameserver 192.168.110.1`), plus any
+`--local-domain` you pass, are sent to that resolver directly (`local-dns`
+tag → `direct` outbound) instead of through the proxy -- the proxy's DNS
+can't know `nas.lan` or a cloud provider's internal names. If the file only
+points at systemd-resolved's `127.0.0.53` stub (unreachable from inside the
+container), resolved's real upstreams from `/run/systemd/resolve/resolv.conf`
+are used instead; IPv6 nameservers are skipped (the gateway's network is
+IPv4-only).
+
+```bash
+uv run vless2config.py 'vless://...' --local-domain tencentyun.com
+# after the host's network changes -- no link needed, edits config.json in place:
+uv run vless2config.py --refresh-dns --local-domain tencentyun.com
+docker restart tun-gw-xray
+```
+
+`--refresh-dns` recomputes the split from scratch each time (pass your
+`--local-domain`s again); `--no-local-dns` skips it entirely. With no
+suffixes found and no `--local-domain` (e.g. `search .`), nothing is added.
+
+The split is by **domain**, never by failure, on purpose: xray's DNS module
+moves on to its next server after *any* failed query -- NXDOMAIN and a proxy
+timeout look the same to it (`serialQuery` in xray-core's `app/dns/dns.go`)
+-- so a "fall back to the local resolver" server would receive every lookup,
+in plaintext, whenever the proxy is down. Internal names you need must be
+covered by a suffix; the last local server is `finalQuery`, so those names
+are never passed on to a public resolver either.
+
 Only `tcp` transport is supported, with `reality`, `tls` or no security
 (matching what this gateway has actually been tested against); other
 transports (`ws`/`grpc`/`kcp`/`quic`/`xhttp`) raise a clear error instead of
@@ -472,7 +502,13 @@ gateway: xray "dns-in" inbound → dns outbound → xray's DNS module
 
 - **IPv6 guard**: table 200 is IPv4-only, so the same users' IPv6 to
   global unicast (`2000::/3`) is rejected outright, instead of silently
-  bypassing the gateway if the host ever gets an IPv6 address.
+  bypassing the gateway if the host ever gets an IPv6 address. Their IPv6
+  DNS to anything but `::1` is rejected too -- a router's `fd00::1` /
+  `fe80::1` resolver isn't global unicast, and the IPv4-only DNAT can't
+  catch it -- so glibc moves straight on to the next (IPv4) nameserver.
+- **LAN / cloud-internal names** keep working through the gateway via the
+  local DNS split `vless2config.py` generates from `/etc/resolv.conf` (see
+  "Generating config.json" above).
 - **Fails closed**: if the gateway is down, these users' lookups error out;
   they never fall back to resolved.
 - **Other users are untouched**: they keep using resolved and `eth0`.

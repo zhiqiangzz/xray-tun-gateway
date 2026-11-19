@@ -37,7 +37,10 @@
 #       untouched by the uidrange rules above.
 #       filter/output: the same users' IPv6 to global unicast (2000::/3) is
 #       rejected -- table $TABLE is IPv4-only, so any IPv6 path would bypass
-#       the gateway entirely.
+#       the gateway entirely -- and so is their IPv6 DNS to anything but ::1
+#       (a router's fd00::1 / fe80::1 resolver isn't global unicast, but the
+#       IPv4-only DNAT above can't catch it either). glibc then moves on to
+#       the next, IPv4, nameserver.
 #
 # $LOOP_FIX_PREF/$BASE_PREF/$MAX_PREF/$TABLE are this script's defaults, not
 # guarantees -- if any of them collide with something else already on a
@@ -214,6 +217,7 @@ table inet $NFT_TABLE {
   }
   chain ipv6_guard {
     type filter hook output priority filter; policy accept;
+    $match meta l4proto { udp, tcp } th dport 53 ip6 daddr != ::1 reject
     $match ip6 daddr 2000::/3 reject
   }
 }
