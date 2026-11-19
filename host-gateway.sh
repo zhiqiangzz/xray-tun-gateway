@@ -209,14 +209,14 @@ _apply_dns() {
   nft -f - <<EOF
 table inet $NFT_TABLE {
   chain dns_redirect {
-    type nat hook output priority dstnat; policy accept;
+    type nat hook output priority -100; policy accept;
     ip daddr { $GW_IP, $DNS_TARGET } return
     $excl
     $match udp dport 53 dnat ip to $DNS_TARGET:53
     $match tcp dport 53 dnat ip to $DNS_TARGET:53
   }
   chain ipv6_guard {
-    type filter hook output priority filter; policy accept;
+    type filter hook output priority 0; policy accept;
     $match meta l4proto { udp, tcp } th dport 53 ip6 daddr != ::1 reject
     $match ip6 daddr 2000::/3 reject
   }
