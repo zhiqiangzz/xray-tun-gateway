@@ -253,6 +253,22 @@ Switching an existing `docker run` gateway over: `docker rm -f tun-gw-xray`
 first (same container name), then `docker compose up -d`. Non-default
 names/addresses go in a `.env` next to the compose file -- see its header.
 
+On a host that only needs the gateway for sibling containers (no
+`host-gateway.sh --dns`), the `127.0.53.1:53` publish is unnecessary:
+siblings started with `--dns 10.90.0.2` reach `dns-in` directly over the
+bridge. Turn it off per host with a `docker-compose.override.yml` next to
+the compose file (picked up automatically, gitignored like `.env`):
+
+```yaml
+services:
+  tun-gw-xray:
+    ports: !reset []
+```
+
+then `docker compose up -d` again. Don't use `host-gateway.sh --dns` on such
+a host -- with nothing on `127.0.53.1:53` the protected users' DNS just
+fails (`status` says so); plain `enable` routing is unaffected.
+
 ---
 
 ## Podman
