@@ -96,11 +96,14 @@ Only `tcp` transport is supported, with `reality`, `tls` or no security
 transports (`ws`/`grpc`/`kcp`/`quic`/`xhttp`) raise a clear error instead of
 emitting a config that looks valid but doesn't work.
 
-`config_tun.template.json` mirrors a desktop (v2rayN-style) export almost
-exactly -- same `dns` block, same `socks` + `tun` inbounds, same flattened
-vless outbound shape (`settings.address/port/id` instead of
-`vnext`/`users`), `network: "raw"`, `realitySettings.mldsa65Verify` --
-with two deliberate differences from a literal copy:
+`config_tun.template.json` started from a desktop (v2rayN-style) export --
+same `socks` + `tun` inbounds, same flattened vless outbound shape
+(`settings.address/port/id` instead of `vnext`/`users`), `network: "raw"`,
+`realitySettings.mldsa65Verify` -- trimmed of what the gateway never uses
+(the `dns.hosts` pins other than the DoH server's own `cloudflare-dns.com`,
+a bootstrap server those pins made unreachable, `geosite:private` sent to a
+public resolver that can't know LAN names anyway, and the obsolete
+`"type": "field"`), and with two deliberate differences from a literal copy:
 - the `tun` inbound's device is named `"tun0"`, not a desktop-style
   `"utun46"`, because `entrypoint.sh` waits for and fixes up routing on
   a device literally named `tun0`;
