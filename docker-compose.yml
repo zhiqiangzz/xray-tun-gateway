@@ -18,13 +18,16 @@
 #   TUN_GW_NETWORK=tun-gw-network     # created with --subnet 10.91.0.0/24
 #   TUN_GW_IP=10.91.0.2               # then: host-gateway.sh -g 10.91.0.2 ...
 #   TUN_GW_DNS_BIND=127.0.53.1        # must match host-gateway.sh's DNS_TARGET
+#   TUN_GW_SOCKS_BIND=127.0.0.1       # host address for the socks inbound
 #   XRAY_BASE_IMAGE=ghcr.io/xtls/xray-core:26.11.9
 #
 # Only sibling containers, no host-gateway.sh --dns on this host? Drop the
-# host DNS publish with a docker-compose.override.yml (gitignored):
+# host DNS publish (keeping socks) with a docker-compose.override.yml
+# (gitignored; `ports: !reset []` drops socks too):
 #   services:
 #     tun-gw-xray:
-#       ports: !reset []
+#       ports: !override
+#         - "127.0.0.1:10808:10808/tcp"
 
 services:
   tun-gw-xray:
@@ -64,6 +67,11 @@ services:
     ports:
       - "${TUN_GW_DNS_BIND:-127.0.53.1}:53:53/udp"
       - "${TUN_GW_DNS_BIND:-127.0.53.1}:53:53/tcp"
+      # The socks/http `mixed` inbound (config listens on 0.0.0.0:10808).
+      # Host loopback only: it has no auth, and Docker-published ports bypass
+      # ufw, so a bare "10808:10808" would be an open proxy on every
+      # interface. TCP only: SOCKS5 UDP doesn't survive the port mapping.
+      - "${TUN_GW_SOCKS_BIND:-127.0.0.1}:10808:10808/tcp"
     volumes:
       - ./config.json:/usr/local/etc/xray/config.json:ro
     # Same as the plain `docker run`: no auto-start. The entrypoint re-applies

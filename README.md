@@ -29,9 +29,13 @@ Podman.
 - Routing policy is full-tunnel: everything except private/LAN addresses
   goes through `proxy` (see `config_tun.template.json`'s `routing.rules` -- there
   is no geoip/geosite China-direct bypass). The config also exposes a
-  `socks` inbound on `127.0.0.1:10808` inside the gateway's own netns, in
-  addition to the `tun` inbound, for manual debugging from inside the
-  gateway.
+  `socks` inbound (`mixed`: SOCKS5 + HTTP, no auth) on `0.0.0.0:10808`
+  inside the gateway's netns, published on the host as `127.0.0.1:10808`
+  only, in addition to the `tun` inbound: an explicit proxy for programs or
+  users not routed by `host-gateway.sh` (`curl -x socks5h://127.0.0.1:10808
+  ...`). Any local user and any container on the gateway's network can use
+  it, so it sidesteps `host-gateway.sh`'s per-user selection -- drop the
+  publish (see the compose override below) if that matters on a host.
 
 ## Prerequisites
 
@@ -141,6 +145,7 @@ docker run -d --name tun-gw-xray \
   -e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= -e NO_PROXY= \
   -e http_proxy= -e https_proxy= -e all_proxy= -e no_proxy= \
   -p 127.0.53.1:53:53/udp -p 127.0.53.1:53:53/tcp \
+  -p 127.0.0.1:10808:10808/tcp \
   -v "$(pwd)/config.json:/usr/local/etc/xray/config.json:ro" \
   tun-gw-xray:local
 ```
@@ -149,6 +154,11 @@ docker run -d --name tun-gw-xray \
   host-only loopback address, for
   [Stopping DNS leaks](#stopping-dns-leaks-optional). Harmless if you never
   turn that on.
+- `-p 127.0.0.1:10808:10808/tcp`: the `socks` inbound, on host loopback
+  only. Never publish it as a bare `10808:10808`: it has no auth, and
+  Docker-published ports bypass ufw, so that is an open proxy on every
+  interface. TCP only (SOCKS5 UDP ASSOCIATE doesn't survive the port
+  mapping).
 - `--user 0`: the base image defaults to a non-root UID, and Linux does not
   propagate `--cap-add`-granted capabilities to a non-root process without
   explicit ambient capabilities. Without this, building `tun0` / editing
@@ -283,15 +293,18 @@ On a host that only needs the gateway for sibling containers (no
 `host-gateway.sh --dns`), the `127.0.53.1:53` publish is unnecessary:
 siblings started with `--dns 10.90.0.2` reach `dns-in` directly over the
 bridge. Turn it off per host with a `docker-compose.override.yml` next to
-the compose file (picked up automatically, gitignored like `.env`):
+the compose file (picked up automatically, gitignored like `.env`), keeping
+the socks publish:
 
 ```yaml
 services:
   tun-gw-xray:
-    ports: !reset []
+    ports: !override
+      - "127.0.0.1:10808:10808/tcp"
 ```
 
-then `docker compose up -d` again. Don't use `host-gateway.sh --dns` on such
+(`ports: !reset []` drops the socks publish too.) Then `docker compose up
+-d` again. Don't use `host-gateway.sh --dns` on such
 a host -- with nothing on `127.0.53.1:53` the protected users' DNS just
 fails (`status` says so); plain `enable` routing is unaffected.
 
@@ -326,13 +339,14 @@ podman run -d --name tun-gw-xray \
   --sysctl net.ipv4.conf.all.forwarding=1 \
   --http-proxy=false \
   -p 127.0.53.1:53:53/udp -p 127.0.53.1:53:53/tcp \
+  -p 127.0.0.1:10808:10808/tcp \
   -v "$(pwd)/config.json:/usr/local/etc/xray/config.json:ro" \
   tun-gw-xray:local
 ```
 
 - `--user 0`: same reason as Docker above.
-- `-p 127.0.53.1:53:53/...`: same as Docker above (binding port 53 needs
-  rootful Podman).
+- `-p 127.0.53.1:53:53/...`, `-p 127.0.0.1:10808:...`: same as Docker
+  above (binding port 53 needs rootful Podman).
 - `--http-proxy=false`: stops Podman from injecting your shell's own
   `HTTP_PROXY`/`HTTPS_PROXY` env vars into the container.
 
