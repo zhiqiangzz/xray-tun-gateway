@@ -581,6 +581,13 @@ otherwise use them.
   entrypoint never saw `tun0` come up within its 30s wait — check that
   `--device /dev/net/tun`, `--cap-add NET_ADMIN` and `--user 0` are all
   present on the `run` command.
+- **`proxy/tun: failed to add interface address fc00::... > permission
+  denied`**, container exits right away: a `config.json` from before the
+  templates went IPv4-only, on a host with IPv6 disabled
+  (`net.ipv6.conf.*.disable_ipv6=1`, which the container's netns inherits).
+  The gateway's network is IPv4-only anyway, so regenerate `config.json`
+  from a current template (or drop the `fc00::` gateway and `::/0` route
+  from the `tun` inbound by hand).
 - **`--sysctl net.ipv4.conf.all.forwarding=1` rejected** (rare, engine/kernel
   dependent): drop the flag from the `run` command, then apply it manually
   once the container is up:

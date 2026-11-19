@@ -78,12 +78,10 @@
         "name": "tun0",
         "MTU": 9000,
         "gateway": [
-          "198.18.0.1/30",
-          "fc00::198:18:0:1/126"
+          "198.18.0.1/30"
         ],
         "autoSystemRoutingTable": [
-          "0.0.0.0/0",
-          "::/0"
+          "0.0.0.0/0"
         ],
         "autoOutboundsInterface": "auto",
         "dns": [
