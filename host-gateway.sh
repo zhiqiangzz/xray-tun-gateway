@@ -56,6 +56,7 @@
 #   sudo /opt/xray-tun-gateway/host-gateway.sh disable
 #        /opt/xray-tun-gateway/host-gateway.sh status
 #   sudo /opt/xray-tun-gateway/host-gateway.sh reapply   # used by the systemd unit at boot
+#   sudo /opt/xray-tun-gateway/host-gateway.sh stop      # systemd ExecStop: clear rules, keep state
 set -euo pipefail
 
 # ---- built-in defaults ----
@@ -95,6 +96,7 @@ Usage:
   sudo $0 disable
        $0 status
   sudo $0 reapply
+  sudo $0 stop
 EOF
   exit 1
 }
@@ -298,6 +300,18 @@ cmd_disable() {
   log "done"
 }
 
+# Clears the rules like `disable`, but leaves the state file alone, so the
+# next `reapply` (systemctl start/restart, or the next boot) restores them.
+# This is what the systemd unit's ExecStop runs: systemd stops the unit on
+# every shutdown and as the first half of `restart`, and running `disable`
+# there would wipe the persisted state before it could ever be replayed.
+cmd_stop() {
+  require_root
+  log "clearing rules (state kept for the next reapply)"
+  _clear
+  log "done"
+}
+
 cmd_reapply() {
   require_root
   if [ ! -s "$STATE_FILE" ]; then
@@ -357,5 +371,6 @@ case "$CMD" in
   disable) cmd_disable ;;
   status)  cmd_status ;;
   reapply) cmd_reapply ;;
+  stop)    cmd_stop ;;
   *) usage ;;
 esac

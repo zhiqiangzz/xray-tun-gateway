@@ -516,8 +516,11 @@ sudo systemctl enable --now tun-gw-host-route.service
 `host-gateway.sh` records the last `enable`/`disable` call in
 `/var/lib/xray-tun-gateway/host-gateway.state`; the service's `ExecStart`
 just replays that file's content (`host-gateway.sh reapply`) on boot, and
-its `ExecStop`
-cleanly clears the rules if the service itself is ever stopped or disabled.
+its `ExecStop` (`host-gateway.sh stop`) clears the rules when the unit is
+stopped -- but, unlike `disable`, leaves the state file alone. That matters
+because systemd stops the unit on every shutdown and as the first half of
+every `restart`; if `ExecStop` wiped the state, there would never be
+anything left to replay.
 Switching between "specific users" and "all" (or disabling) takes effect
 immediately when you next run `enable`/`disable` -- you don't need to
 restart the systemd unit for that, only the state file's replay-at-boot
@@ -533,14 +536,21 @@ own:
 ```bash
 systemctl status tun-gw-host-route    # active/inactive, plus the log lines below
 sudo systemctl restart tun-gw-host-route   # re-run reapply now, without retyping which users
-sudo systemctl stop tun-gw-host-route      # disable (same as `host-gateway.sh disable`)
+sudo systemctl stop tun-gw-host-route      # clear the rules for now; state kept, next start/boot restores it
 journalctl -u tun-gw-host-route            # full history
 ```
 
 To change *which* users are covered, that still goes through the script
 directly (`enable`/`disable` write the state `systemctl` later replays) --
 `systemctl start`/`restart` re-apply that state, they don't ask who to
-apply it to.
+apply it to. Likewise, to turn the routing off *persistently* (so the next
+boot doesn't bring it back), use `host-gateway.sh disable`, not `systemctl
+stop`.
+
+**Upgrading from an older checkout:** earlier versions of the unit used
+`ExecStop=... disable`, which wiped the state on every shutdown/restart. After
+reinstalling `host-gateway.sh` and the unit file (and `daemon-reload`), run
+your `enable ...` command once more to re-record the state.
 
 `reapply` (and `enable`) also ping the gateway's own IP right after applying
 the rules and log the result either way, so `systemctl status` (which shows

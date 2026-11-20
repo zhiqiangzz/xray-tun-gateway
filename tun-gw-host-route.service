@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/xray-tun-gateway/host-gateway.sh reapply
-ExecStop=/opt/xray-tun-gateway/host-gateway.sh disable
+ExecStop=/opt/xray-tun-gateway/host-gateway.sh stop
 
 [Install]
 WantedBy=multi-user.target
